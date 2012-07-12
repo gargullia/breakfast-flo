@@ -198,8 +198,7 @@ static int __init lid_driver_probe(struct platform_device *pdev)
 	device_init_wakeup(&pdev->dev, 1);
 	enable_irq_wake(irq);
 
-	INIT_DELAYED_WORK_DEFERRABLE(&lid_hall_sensor_work,
-					lid_report_function);
+	INIT_DEFERRABLE_WORK(&lid_hall_sensor_work, lid_report_function);
 
 	return ret;
 
