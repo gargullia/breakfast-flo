@@ -2910,10 +2910,18 @@ static int mdp4_igc_lut_write(struct mdp_igc_lut_data *cfg, uint32_t en_off,
 
 	off_low = (uint32_t *)(MDP_BASE + base + lut_off);
 	off_high = (uint32_t *)(MDP_BASE + base + lut_off + 0x800);
-	if (copy_from_user(&low, cfg->c0_c1_data, cfg->len * sizeof(uint32_t)))
-		return -EFAULT;
-	if (copy_from_user(&high, cfg->c2_data, cfg->len * sizeof(uint32_t)))
-		return -EFAULT;
+
+	if (cfg->ops & MDP_PP_OPS_KSPACE) {
+		memcpy(&low, cfg->c0_c1_data, cfg->len * sizeof(uint32_t));
+		memcpy(&high, cfg->c2_data, cfg->len * sizeof(uint32_t));
+	} else {
+		if (copy_from_user(&low, cfg->c0_c1_data,
+		    cfg->len * sizeof(uint32_t)))
+			return -EFAULT;
+		if (copy_from_user(&high, cfg->c2_data,
+		    cfg->len * sizeof(uint32_t)))
+			return -EFAULT;
+	}
 
 	mdp_pipe_ctrl(MDP_CMD_BLOCK, MDP_BLOCK_POWER_ON, FALSE);
 	for (i = 0; i < cfg->len; i++) {

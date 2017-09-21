@@ -106,6 +106,14 @@ config FB_MSM_MDP_NONE
 
 endchoice
 
+config FB_MSM_MDP4_KCAL_CTRL
+	depends on FB_MSM_MDP40
+	bool "MDP4 color control"
+	default y
+	---help---
+	  Enable sysfs for RGB/LUT and IGC controls of mdp4 display
+	  controllers.
+
 config FB_MSM_EBI2
 	bool
 	default n

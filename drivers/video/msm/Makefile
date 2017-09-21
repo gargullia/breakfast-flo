@@ -23,6 +23,8 @@ obj-y += mdp_ppp_v20.o
 endif
 endif
 
+obj-$(CONFIG_FB_MSM_MDP4_KCAL_CTRL) += mdp4_kcal_ctrl.o
+
 ifeq ($(CONFIG_FB_MSM_OVERLAY),y)
 obj-y += mdp4_overlay.o
 obj-y += mdp4_overlay_lcdc.o
