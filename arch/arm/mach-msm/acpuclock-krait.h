@@ -270,6 +270,12 @@ struct acpuclk_platform_data {
 };
 
 /**
+ * CPU voltage interface - manually calibrate voltage-on-frequency.
+ */
+ssize_t acpuclk_krait_freq_get_vdd(char *buf);
+ssize_t acpuclk_krait_freq_set_vdd(const char *buf);
+
+/**
  * acpuclk_krait_init - Initialize the Krait CPU clock driver give SoC params.
  */
 extern int acpuclk_krait_init(struct device *dev,
