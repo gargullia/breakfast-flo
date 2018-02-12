@@ -53,6 +53,7 @@ struct saw_vreg {
 	struct regulator_desc		desc;
 	struct regulator_dev		*rdev;
 	char				*name;
+	int				min_uV;
 	int				uV;
 };
 
@@ -61,6 +62,13 @@ struct saw_vreg {
 
 /* Specifies the PMIC internal slew rate in uV/us. */
 #define REGULATOR_SLEW_RATE		1250
+
+static int saw_get_current_limit(struct regulator_dev *rdev)
+{
+	struct saw_vreg *vreg = rdev_get_drvdata(rdev);
+
+	return vreg->min_uV;
+}
 
 static int saw_get_voltage(struct regulator_dev *rdev)
 {
@@ -136,6 +144,7 @@ static int saw_set_voltage(struct regulator_dev *rdev, int min_uV, int max_uV,
 static struct regulator_ops saw_ops = {
 	.get_voltage = saw_get_voltage,
 	.set_voltage = saw_set_voltage,
+	.get_current_limit = saw_get_current_limit,
 };
 
 static int __devinit saw_probe(struct platform_device *pdev)
@@ -173,6 +182,7 @@ static int __devinit saw_probe(struct platform_device *pdev)
 	vreg->desc.ops   = &saw_ops;
 	vreg->desc.type  = REGULATOR_VOLTAGE;
 	vreg->desc.owner = THIS_MODULE;
+	vreg->min_uV	 = init_data->constraints.min_uV;
 	vreg->uV	 = MIN_CORE_VOLTAGE;
 
 	vreg->rdev = regulator_register(&vreg->desc, &pdev->dev,
