@@ -17,7 +17,7 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/module.h>
-#include <linux/mfd/wcd9xxx/wcd9xxx-snd-ctrl.h>
+#include <linux/platform_data/wcd9xxx-snd-ctrl.h>
 
 #define CTRL_NAME_LEN	32
 
@@ -26,18 +26,15 @@
 #define __RL		(1)
 
 /* Helpers */
-#define line_present(line) (!!ctrl_data->line##_line)
-#define read_line(line)							\
-	ctrl_data->read(ctrl_data->codec, ctrl_data->line##_line)
-#define write_line(line, val)						\
-	ctrl_data->write(ctrl_data->codec, ctrl_data->line##_line, (val))
-#define apply_gain(line)						\
-	if (snd_data->line##_line)					\
-		snd_data->write(snd_data->codec, snd_data->line##_line,	\
-			       (stats->line##_gain))
+#define line_present(name)	\
+	__builtin_expect(!!(ctrl_data->lines.name##_line), 1)
+#define read_line(name)		\
+	ctrl_data->read(ctrl_data->codec, ctrl_data->lines.name##_line)
+#define write_line(name, val)	\
+	ctrl_data->write(ctrl_data->codec, ctrl_data->lines.name##_line, (val))
 
 struct ctrl_stats {
-	struct snd_ctrl_data data;
+	struct snd_ctrl_pdata data;
 
 	/* Default sound gains */
 	u32 mic_gain;
@@ -213,11 +210,60 @@ bool snd_ctrl_data_handled(struct snd_ctrl_data *snd_data)
 		return false;
 
 	/* At least one sound line must be fullfilled */
-	return (snd_data->mic_line || snd_data->cam_mic_line ||
-		snd_data->speaker_l_line || snd_data->speaker_r_line ||
-		snd_data->headphone_l_line || snd_data->headphone_r_line);
+	return (snd_data->lines.mic_line ||
+		snd_data->lines.cam_mic_line ||
+		snd_data->lines.speaker_l_line ||
+		snd_data->lines.speaker_r_line ||
+		snd_data->lines.headphone_l_line ||
+		snd_data->lines.headphone_r_line);
 }
 EXPORT_SYMBOL_GPL(snd_ctrl_data_handled);
+
+/**
+ * find_ctrl_data() - search for a control data in a global codec list.
+ * @ctrl_name: name of a target member.
+ *
+ * Returns target member structure if found or NULL to the contrary.
+ */
+static struct snd_ctrl_data *find_ctrl_data(const char *ctrl_name)
+{
+	struct snd_ctrl_data *entry;
+
+	/* Return early if there is nothing to search */
+	if (IS_ERR_OR_NULL(ctrl_name) || list_empty(&codec_list))
+		return NULL;
+
+	/*
+	 * It is pretended that there will not be a huge list of codecs, so
+	 * a linear search here will not be a problem. Conversely, it is an
+	 * efficient searching algorithm within a little list of options.
+	 * However, there will be a mess if a giant number of codecs is
+	 * registered.
+	 */
+	list_for_each_entry(entry, &codec_list, member)
+		if (!strnicmp(ctrl_name, entry->name, CTRL_NAME_LEN))
+			return entry;
+
+	return NULL;
+}
+
+/**
+ * snd_ctrl_data_expected() - check whether the passed control data is set
+ * in open firmware.
+ * @snd_data: pointer to sound control data.
+ *
+ * Compares the names of local (expected) control data from open firmware and
+ * a passed one. Returns true if they are the same, false otherwise.  In case
+ * local data is not initialized, it returns false too.
+ */
+static inline bool snd_ctrl_data_expected(struct snd_ctrl_data *snd_data)
+{
+	/* Empty stats mean the absence of DT intercalation */
+	if (IS_ERR_OR_NULL(stats))
+		return false;
+
+	return !strnicmp(stats->data.name, snd_data->name, CTRL_NAME_LEN);
+}
 
 /**
  * snd_ctrl_data_ready() - check whether there is a global control data.
@@ -271,31 +317,49 @@ static inline bool snd_ctrl_data_global_rw(struct snd_ctrl_data *snd_data)
 }
 
 /**
- * find_ctrl_data() - search for a control data in a global codec list.
- * @ctrl_name: name of a target member.
+ * apply_gains() - write default gains from local data to a passed ctrl data.
+ * @snd_data: pointer to sound control data.
  *
- * Returns target member structure if found or NULL to the contrary.
+ * Uses internal calls to setup a passed control data.
  */
-static struct snd_ctrl_data *find_ctrl_data(const char *ctrl_name)
+static inline void apply_gains(struct snd_ctrl_data *snd_data)
 {
-	struct snd_ctrl_data *entry;
+#define apply_gain(line)					\
+	if (snd_data->lines.line##_line)			\
+		snd_data->write(snd_data->codec,		\
+				snd_data->lines.line##_line,	\
+			       (stats->line##_gain))
+	apply_gain(mic);
+	apply_gain(cam_mic);
+	apply_gain(speaker_l);
+	apply_gain(speaker_r);
+	apply_gain(headphone_l);
+	apply_gain(headphone_r);
+}
 
-	/* Return early if there is nothing to search */
-	if (IS_ERR_OR_NULL(ctrl_name) || list_empty(&codec_list))
-		return NULL;
+/**
+ * snd_ctrl_data_fill_of() - fill a passed control data with the values
+ * from open firmware.
+ * @snd_data: pointer to sound control data.
+ *
+ * Assigns the values from local data which are gained from DT to a passed
+ * data. Returns -EINVAL on failure or zero on success.
+ */
+static inline int snd_ctrl_data_fill_of(struct snd_ctrl_data *snd_data)
+{
+	if (IS_ERR_OR_NULL(stats))
+		return -EINVAL;
 
-	/*
-	 * It is pretended that there will not be a huge list of codecs, so
-	 * a linear search here will not be a problem. Conversely, it is an
-	 * efficient searching algorithm within a little list of options.
-	 * However, there will be a mess if a giant number of codecs is
-	 * registered.
-	 */
-	list_for_each_entry(entry, &codec_list, member)
-		if (!strnicmp(ctrl_name, entry->name, CTRL_NAME_LEN))
-			return entry;
+	snd_data->lines.mic_line = stats->data.lines.mic_line;
+	snd_data->lines.cam_mic_line = stats->data.lines.cam_mic_line;
+	snd_data->lines.speaker_l_line = stats->data.lines.speaker_l_line;
+	snd_data->lines.speaker_r_line = stats->data.lines.speaker_r_line;
+	snd_data->lines.headphone_l_line = stats->data.lines.headphone_l_line;
+	snd_data->lines.headphone_r_line = stats->data.lines.headphone_r_line;
 
-	return NULL;
+	apply_gains(snd_data);
+
+	return 0;
 }
 
 /**
@@ -334,65 +398,6 @@ static int parse_ctrl_data(struct snd_ctrl_data **snd_data,
 empty:
 	*snd_data = tmp;
 	mutex_unlock(&snd_ctrl_mutex);
-
-	return 0;
-}
-
-/**
- * snd_ctrl_data_expected() - check whether the passed control data is set
- * in open firmware.
- * @snd_data: pointer to sound control data.
- *
- * Compares the names of local (expected) control data from open firmware and
- * a passed one. Returns true if they are the same, false otherwise.  In case
- * local data is not initialized, it returns false too.
- */
-static inline bool snd_ctrl_data_expected(struct snd_ctrl_data *snd_data)
-{
-	/* Empty stats mean the absence of DT intercalation */
-	if (IS_ERR_OR_NULL(stats))
-		return false;
-
-	return !strnicmp(stats->data.name, snd_data->name, CTRL_NAME_LEN);
-}
-
-/**
- * apply_gains() - write default gains from local data to a passed ctrl data.
- * @snd_data: pointer to sound control data.
- *
- * Uses internal calls to setup a passed control data.
- */
-static inline void apply_gains(struct snd_ctrl_data *snd_data)
-{
-	apply_gain(mic);
-	apply_gain(cam_mic);
-	apply_gain(speaker_l);
-	apply_gain(speaker_r);
-	apply_gain(headphone_l);
-	apply_gain(headphone_r);
-}
-
-/**
- * snd_ctrl_data_fill_of() - fill a passed control data with the values
- * from open firmware.
- * @snd_data: pointer to sound control data.
- *
- * Assigns the values from local data which are gained from DT to a passed
- * data. Returns -EINVAL on failure or zero on success.
- */
-static inline int snd_ctrl_data_fill_of(struct snd_ctrl_data *snd_data)
-{
-	if (IS_ERR_OR_NULL(stats))
-		return -EINVAL;
-
-	snd_data->mic_line = stats->data.mic_line;
-	snd_data->cam_mic_line = stats->data.cam_mic_line;
-	snd_data->speaker_l_line = stats->data.speaker_l_line;
-	snd_data->speaker_r_line = stats->data.speaker_r_line;
-	snd_data->headphone_l_line = stats->data.headphone_l_line;
-	snd_data->headphone_r_line = stats->data.headphone_r_line;
-
-	apply_gains(snd_data);
 
 	return 0;
 }
@@ -480,10 +485,11 @@ static ssize_t show_##name##_line(struct kobject *kobj,			\
 				  struct kobj_attribute *attr,		\
 				  char *buf)				\
 {									\
-	if (!snd_ctrl_data_ready(__RL) || !ctrl_data->name##_line)	\
+	if (!snd_ctrl_data_ready(__RL) || !line_present(name))		\
 		return scnprintf(buf, 8, "<none>\n");			\
 									\
-	return scnprintf(buf, 7, "0x%x\n", ctrl_data->name##_line);	\
+	return scnprintf(buf, 7, "0x%x\n",				\
+			 ctrl_data->lines.name##_line);			\
 }									\
 									\
 static ssize_t store_##name##_line(struct kobject *kobj,		\
@@ -500,7 +506,7 @@ static ssize_t store_##name##_line(struct kobject *kobj,		\
 	if (ret != 1 || (int)reg < 0 || reg > 0x3FF)			\
 		return -EINVAL;						\
 									\
-	ctrl_data->name##_line = reg;					\
+	ctrl_data->lines.name##_line = reg;				\
 									\
 	return count;							\
 }									\
@@ -591,16 +597,11 @@ static struct attribute_group snd_ctrl_lines_group = {
 	.attrs = snd_ctrl_lines,
 };
 
-static int __devinit snd_ctrl_probe(struct platform_device *pdev)
+static int __devinit snd_ctrl_parse_dt(struct device_node *node)
 {
-	struct device_node *node = pdev->dev.of_node;
 	u32 default_gain[6] = { 0 };
 	int ret, fail = -EINVAL;
 	char *key;
-
-	/* Skip data collection from DT early if it is unsupported */
-	if (IS_ERR_OR_NULL(node))
-		return 0;
 
 	/* Stop parsing if driver is disabled in DT */
 	key = "status";
@@ -609,14 +610,6 @@ static int __devinit snd_ctrl_probe(struct platform_device *pdev)
 		pr_debug("Sound controller is disabled\n");
 		return 0;
 	}
-
-	stats = devm_kzalloc(&pdev->dev, sizeof(*stats), GFP_KERNEL);
-	if (IS_ERR_OR_NULL(stats)) {
-		pr_err("Unable to allocate memory for control stats\n");
-		return -ENOMEM;
-	}
-
-	platform_set_drvdata(pdev, stats);
 
 	/*
 	 * Codec name is compulsory. There is no sense in continuing in case of
@@ -630,41 +623,18 @@ static int __devinit snd_ctrl_probe(struct platform_device *pdev)
 	}
 
 	/* Fail only if all the keys are unstated */
-	key = "qcom,mic_line";
-	ret = of_property_read_u32(node, key, &stats->data.mic_line);
-	if (IS_ERR_VALUE(ret))
-		pr_err("Unable to get %s from node %s\n", key, node->full_name);
-	fail &= ret;
+#define get_line(fail, node, key, line) ({				    \
+	int ret = of_property_read_u32(node, key, &stats->data.lines.line); \
+	if (IS_ERR_VALUE(ret))						    \
+		pr_err("Unable to get %s\n", key);			    \
+	fail &= ret; })
 
-	key = "qcom,cam_mic_line";
-	ret = of_property_read_u32(node, key, &stats->data.cam_mic_line);
-	if (IS_ERR_VALUE(ret))
-		pr_err("Unable to get %s from node %s\n", key, node->full_name);
-	fail &= ret;
-
-	key = "qcom,speaker_l_line";
-	ret = of_property_read_u32(node, key, &stats->data.speaker_l_line);
-	if (IS_ERR_VALUE(ret))
-		pr_err("Unable to get %s from node %s\n", key, node->full_name);
-	fail &= ret;
-
-	key = "qcom,speaker_r_line";
-	ret = of_property_read_u32(node, key, &stats->data.speaker_r_line);
-	if (IS_ERR_VALUE(ret))
-		pr_err("Unable to get %s from node %s\n", key, node->full_name);
-	fail &= ret;
-
-	key = "qcom,headphone_l_line";
-	ret = of_property_read_u32(node, key, &stats->data.headphone_l_line);
-	if (IS_ERR_VALUE(ret))
-		pr_err("Unable to get %s from node %s\n", key, node->full_name);
-	fail &= ret;
-
-	key = "qcom,headphone_r_line";
-	ret = of_property_read_u32(node, key, &stats->data.headphone_r_line);
-	if (IS_ERR_VALUE(ret))
-		pr_err("Unable to get %s from node %s\n", key, node->full_name);
-	fail &= ret;
+	get_line(fail, node, "qcom,mic_line", mic_line);
+	get_line(fail, node, "qcom,cam_mic_line", cam_mic_line);
+	get_line(fail, node, "qcom,speaker_l_line", speaker_l_line);
+	get_line(fail, node, "qcom,speaker_r_line", speaker_r_line);
+	get_line(fail, node, "qcom,headphone_l_line", headphone_l_line);
+	get_line(fail, node, "qcom,headphone_r_line", headphone_r_line);
 
 	key = "qcom,default_gain";
 	ret = of_property_read_u32_array(node, key, default_gain, 6);
@@ -683,36 +653,70 @@ static int __devinit snd_ctrl_probe(struct platform_device *pdev)
 	return fail;
 }
 
-static int __devexit snd_ctrl_remove(struct platform_device *pdev)
+static int __devinit snd_ctrl_parse_pdata(struct snd_ctrl_pdata *pdata)
 {
-	platform_set_drvdata(pdev, NULL);
+	/*
+	 * Codec name is compulsory. There is no sense in continuing in case of
+	 * an absence as it is required for snd_ctrl_data_expected() function.
+	 */
+	stats->data.name = pdata->name;
+	if (IS_ERR_OR_NULL(stats->data.name)) {
+		pr_err("Unable to get codec name from platform data\n");
+		return -EINVAL;
+	}
+
+	/* We cannot fail in this context */
+	stats->data.lines.mic_line = pdata->lines.mic_line;
+	stats->data.lines.cam_mic_line = pdata->lines.cam_mic_line;
+	stats->data.lines.speaker_l_line = pdata->lines.speaker_l_line;
+	stats->data.lines.speaker_r_line = pdata->lines.speaker_r_line;
+	stats->data.lines.headphone_l_line = pdata->lines.headphone_l_line;
+	stats->data.lines.headphone_r_line = pdata->lines.headphone_r_line;
+
+	/* Setup default sound gains */
+	if (pdata->default_gain) {
+		stats->mic_gain = pdata->default_gain[0];
+		stats->cam_mic_gain = pdata->default_gain[1];
+		stats->speaker_l_gain = pdata->default_gain[2];
+		stats->speaker_r_gain = pdata->default_gain[3];
+		stats->headphone_l_gain = pdata->default_gain[4];
+		stats->headphone_r_gain = pdata->default_gain[5];
+	}
 
 	return 0;
 }
 
-static const struct of_device_id snd_ctrl_match_table[] = {
-	{ .compatible = "qcom,wcd9xxx-snd-ctrl" },
-	{ },
-};
-
-static struct platform_driver snd_ctrl_driver = {
-	.probe = snd_ctrl_probe,
-	.remove = __devexit_p(snd_ctrl_remove),
-	.driver = {
-		.name = "wcd9xxx-snd-ctrl",
-		.owner = THIS_MODULE,
-		.of_match_table = of_match_ptr(snd_ctrl_match_table),
-	},
-};
-
-static int __init snd_ctrl_init(void)
+static int __devinit snd_ctrl_probe(struct platform_device *pdev)
 {
+	struct snd_ctrl_pdata *pdata = pdev->dev.platform_data;
+	struct device_node *node = pdev->dev.of_node;
 	int ret;
 
-	ret = platform_driver_register(&snd_ctrl_driver);
-	if (IS_ERR_VALUE(ret)) {
-		pr_err("Unable to register platform driver\n");
-		return ret;
+	stats = devm_kzalloc(&pdev->dev, sizeof(*stats), GFP_KERNEL);
+	if (IS_ERR_OR_NULL(stats)) {
+		pr_err("Unable to allocate memory for control stats\n");
+		return -ENOMEM;
+	}
+
+	platform_set_drvdata(pdev, stats);
+
+	/* Try to get default values either from OF or platform data */
+	if (node) {
+		ret = snd_ctrl_parse_dt(node);
+		if (IS_ERR_VALUE(ret)) {
+			pr_err("Unable to parse device tree\n");
+			goto fail_parse;
+		}
+	} else if (pdata) {
+		ret = snd_ctrl_parse_pdata(pdata);
+		if (IS_ERR_VALUE(ret)) {
+			pr_err("Unable to parse platform data\n");
+			goto fail_parse;
+		}
+	} else {
+		/* Get rid of stats if they are not going to be used */
+		platform_set_drvdata(pdev, NULL);
+		kfree(stats);
 	}
 
 	snd_ctrl_kobj = kobject_create_and_add("sound_control_3", kernel_kobj);
@@ -741,17 +745,46 @@ fail_lines:
 fail_attrs:
 	kobject_del(snd_ctrl_kobj);
 fail_kobj:
-	platform_driver_unregister(&snd_ctrl_driver);
+fail_parse:
+	platform_set_drvdata(pdev, NULL);
+	kfree(stats); /* Nullify statistics to avoid data filling at all */
 
 	return ret;
 }
 
-static void __exit snd_ctrl_exit(void)
+static int __devexit snd_ctrl_remove(struct platform_device *pdev)
 {
+	platform_set_drvdata(pdev, NULL);
+
 	sysfs_remove_group(snd_ctrl_kobj, &snd_ctrl_lines_group);
 	sysfs_remove_group(snd_ctrl_kobj, &snd_ctrl_attr_group);
 	kobject_del(snd_ctrl_kobj);
 
+	return 0;
+}
+
+static const struct of_device_id snd_ctrl_match_table[] = {
+	{ .compatible = "qcom,wcd9xxx-snd-ctrl" },
+	{ },
+};
+
+static struct platform_driver snd_ctrl_driver = {
+	.probe = snd_ctrl_probe,
+	.remove = __devexit_p(snd_ctrl_remove),
+	.driver = {
+		.name = "wcd9xxx-snd-ctrl",
+		.owner = THIS_MODULE,
+		.of_match_table = of_match_ptr(snd_ctrl_match_table),
+	},
+};
+
+static int __init snd_ctrl_init(void)
+{
+	return platform_driver_register(&snd_ctrl_driver);
+}
+
+static void __exit snd_ctrl_exit(void)
+{
 	platform_driver_unregister(&snd_ctrl_driver);
 }
 
